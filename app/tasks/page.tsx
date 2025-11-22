@@ -387,7 +387,7 @@ function TaskItem({
               const newStatus = e.target.checked ? "complete" : "in progress";
               onStatusChange(task._id, newStatus);
             }}
-            className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500 flex-shrink-0"
+            className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500 shrink-0"
           />
 
           {/* Task Info */}
