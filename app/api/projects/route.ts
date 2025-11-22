@@ -8,6 +8,50 @@ import {
   calculateProjectProgress,
 } from "@/lib/progressCalculator";
 
+// TypeScript interfaces
+interface IProject {
+  _id: string;
+  name: string;
+  startDate: string;
+  endDate: string;
+  progress: number;
+  client: any;
+  tasks: any[];
+  created_at: string;
+  updated_at: string;
+}
+
+interface IClient {
+  _id: string;
+  name: string;
+  address: string;
+}
+
+interface ITask {
+  _id: string;
+  name: string;
+  status: "complete" | "in progress";
+  assignedTeamMember: any;
+  project: string;
+}
+
+interface IProjectCreateData {
+  name: string;
+  startDate: string;
+  endDate: string;
+  client: string;
+  progress?: number;
+}
+
+interface IProjectUpdateData {
+  _id: string;
+  name?: string;
+  startDate?: string;
+  endDate?: string;
+  client?: string;
+  progress?: number;
+}
+
 // Error response helper
 function errorResponse(message: string, status: number = 500, details?: any) {
   console.error(`Projects API Error (${status}):`, message, details);
@@ -41,29 +85,35 @@ function validateProjectData(body: any): {
 } {
   const errors: string[] = [];
 
-  if (!body.name || body.name.trim().length === 0) {
-    errors.push("Project name is required");
+  if (
+    !body.name ||
+    typeof body.name !== "string" ||
+    body.name.trim().length === 0
+  ) {
+    errors.push("Project name is required and must be a string");
   }
 
-  if (!body.startDate) {
-    errors.push("Start date is required");
+  if (!body.startDate || typeof body.startDate !== "string") {
+    errors.push("Start date is required and must be a string");
   }
 
-  if (!body.endDate) {
-    errors.push("End date is required");
+  if (!body.endDate || typeof body.endDate !== "string") {
+    errors.push("End date is required and must be a string");
   }
 
   if (body.startDate && body.endDate) {
     const startDate = new Date(body.startDate);
     const endDate = new Date(body.endDate);
 
-    if (endDate <= startDate) {
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+      errors.push("Invalid date format");
+    } else if (endDate <= startDate) {
       errors.push("End date must be after start date");
     }
   }
 
-  if (!body.client) {
-    errors.push("Client is required");
+  if (!body.client || typeof body.client !== "string") {
+    errors.push("Client ID is required and must be a string");
   }
 
   return {
@@ -121,7 +171,7 @@ export async function GET() {
 
 // POST create new project
 export async function POST(request: NextRequest) {
-  let body;
+  let body: IProjectCreateData;
 
   try {
     body = await request.json();
@@ -141,15 +191,26 @@ export async function POST(request: NextRequest) {
     await connectDB();
 
     const project = await Project.create({
-      ...body,
+      name: body.name,
+      startDate: body.startDate,
+      endDate: body.endDate,
+      client: body.client,
       progress: 0, // Initialize progress to 0
     });
+
+    const populatedProject = await Project.findById(project._id)
+      .populate("client")
+      .populate("tasks");
 
     console.log(
       `✅ Successfully created project: ${project.name} (${project._id})`
     );
 
-    return successResponse(project, 201, "Project created successfully");
+    return successResponse(
+      populatedProject,
+      201,
+      "Project created successfully"
+    );
   } catch (error: any) {
     console.error("❌ POST Project Error:", error);
 
@@ -178,7 +239,7 @@ export async function POST(request: NextRequest) {
 
 // PUT update project
 export async function PUT(request: NextRequest) {
-  let body;
+  let body: IProjectUpdateData;
 
   try {
     body = await request.json();
@@ -200,12 +261,25 @@ export async function PUT(request: NextRequest) {
       updateData.endDate ||
       updateData.client
     ) {
-      const validation = validateProjectData({
+      const validationData = {
         name: updateData.name || "dummy",
-        ...updateData,
-      });
+        startDate: updateData.startDate || "2000-01-01",
+        endDate: updateData.endDate || "2000-01-02",
+        client: updateData.client || "dummy",
+      };
+
+      const validation = validateProjectData(validationData);
       if (!validation.isValid) {
-        return errorResponse("Validation failed", 400, validation.errors);
+        // Filter out dummy value errors
+        const realErrors = validation.errors.filter(
+          (error) =>
+            !error.includes("dummy") &&
+            !error.includes("Invalid date format for dummy dates")
+        );
+
+        if (realErrors.length > 0) {
+          return errorResponse("Validation failed", 400, realErrors);
+        }
       }
     }
 
@@ -224,7 +298,7 @@ export async function PUT(request: NextRequest) {
       return errorResponse("Project not found", 404);
     }
 
-    console.log(`✅ Successfully updated project: ${project.name}`);
+    console.log(`✅ Successfully updated project: ${(project as any).name}`);
 
     return successResponse(project, 200, "Project updated successfully");
   } catch (error: any) {
@@ -284,7 +358,9 @@ export async function PATCH(request: NextRequest) {
       .populate("tasks");
 
     console.log(
-      `✅ Successfully recalculated progress for project: ${project.name} - ${project.progress}%`
+      `✅ Successfully recalculated progress for project: ${
+        (project as any).name
+      } - ${(project as any).progress}%`
     );
 
     return successResponse(project, 200, "Progress recalculated successfully");
@@ -323,42 +399,27 @@ export async function DELETE(request: NextRequest) {
       return errorResponse("Project not found", 404);
     }
 
-    // Use transaction-like pattern for atomic operations
-    const session = await Project.startSession();
+    const projectName = (existingProject as any).name;
 
-    try {
-      session.startTransaction();
+    // Delete all tasks associated with this project
+    const deleteTasksResult = await Task.deleteMany({ project: id });
+    console.log(
+      `🗑️ Deleted ${deleteTasksResult.deletedCount} tasks for project ${id}`
+    );
 
-      // Delete all tasks associated with this project
-      const deleteTasksResult = await Task.deleteMany(
-        { project: id },
-        { session }
-      );
-      console.log(
-        `🗑️ Deleted ${deleteTasksResult.deletedCount} tasks for project ${id}`
-      );
+    // Delete the project
+    await Project.findByIdAndDelete(id);
 
-      // Delete the project
-      const project = await Project.findByIdAndDelete(id, { session });
+    console.log(`✅ Successfully deleted project: ${projectName}`);
 
-      await session.commitTransaction();
-
-      console.log(`✅ Successfully deleted project: ${existingProject.name}`);
-
-      return successResponse(
-        {
-          deletedProject: project,
-          deletedTasksCount: deleteTasksResult.deletedCount,
-        },
-        200,
-        "Project and associated tasks deleted successfully"
-      );
-    } catch (transactionError) {
-      await session.abortTransaction();
-      throw transactionError;
-    } finally {
-      session.endSession();
-    }
+    return successResponse(
+      {
+        deletedProjectId: id,
+        deletedTasksCount: deleteTasksResult.deletedCount,
+      },
+      200,
+      "Project and associated tasks deleted successfully"
+    );
   } catch (error: any) {
     console.error("❌ DELETE Project Error:", error);
 
