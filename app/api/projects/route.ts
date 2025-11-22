@@ -7,32 +7,23 @@ import {
   updateProjectProgress,
   calculateProjectProgress,
 } from "@/lib/progressCalculator";
+import { Types } from "mongoose";
 
 // TypeScript interfaces
 interface IProject {
-  _id: string;
+  _id: Types.ObjectId;
   name: string;
   startDate: string;
   endDate: string;
   progress: number;
-  client: any;
-  tasks: any[];
-  created_at: string;
-  updated_at: string;
+  client: Types.ObjectId;
+  tasks: Types.ObjectId[];
+  created_at: Date;
+  updated_at: Date;
 }
 
-interface IClient {
-  _id: string;
-  name: string;
-  address: string;
-}
-
-interface ITask {
-  _id: string;
-  name: string;
-  status: "complete" | "in progress";
-  assignedTeamMember: any;
-  project: string;
+interface IProjectDocument extends IProject {
+  save(): Promise<IProjectDocument>;
 }
 
 interface IProjectCreateData {
@@ -76,6 +67,15 @@ function successResponse(data: any, status: number = 200, message?: string) {
     },
     { status }
   );
+}
+
+// Safe property access helper
+function getProjectName(project: any): string {
+  return project?.name || project?.name || "Unknown Project";
+}
+
+function getProjectId(project: any): string {
+  return project?._id?.toString() || project?.id || "Unknown ID";
 }
 
 // Validation helper
@@ -198,13 +198,18 @@ export async function POST(request: NextRequest) {
       progress: 0, // Initialize progress to 0
     });
 
-    const populatedProject = await Project.findById(project._id)
-      .populate("client")
-      .populate("tasks");
+    // Use the safe property access helpers
+    const projectName = getProjectName(project);
+    const projectId = getProjectId(project);
 
     console.log(
-      `✅ Successfully created project: ${project.name} (${project._id})`
+      `✅ Successfully created project: ${projectName} (${projectId})`
     );
+
+    // Populate the project before returning
+    const populatedProject = await Project.findById(projectId)
+      .populate("client")
+      .populate("tasks");
 
     return successResponse(
       populatedProject,
@@ -298,7 +303,8 @@ export async function PUT(request: NextRequest) {
       return errorResponse("Project not found", 404);
     }
 
-    console.log(`✅ Successfully updated project: ${(project as any).name}`);
+    const projectName = getProjectName(project);
+    console.log(`✅ Successfully updated project: ${projectName}`);
 
     return successResponse(project, 200, "Project updated successfully");
   } catch (error: any) {
@@ -351,16 +357,23 @@ export async function PATCH(request: NextRequest) {
       return errorResponse("Project not found", 404);
     }
 
+    const existingProjectName = getProjectName(existingProject);
+
     await updateProjectProgress(id);
 
     const project = await Project.findById(id)
       .populate("client")
       .populate("tasks");
 
+    if (!project) {
+      return errorResponse("Project not found after progress update", 404);
+    }
+
+    const projectName = getProjectName(project);
+    const projectProgress = (project as any).progress || 0;
+
     console.log(
-      `✅ Successfully recalculated progress for project: ${
-        (project as any).name
-      } - ${(project as any).progress}%`
+      `✅ Successfully recalculated progress for project: ${projectName} - ${projectProgress}%`
     );
 
     return successResponse(project, 200, "Progress recalculated successfully");
@@ -399,7 +412,7 @@ export async function DELETE(request: NextRequest) {
       return errorResponse("Project not found", 404);
     }
 
-    const projectName = (existingProject as any).name;
+    const projectName = getProjectName(existingProject);
 
     // Delete all tasks associated with this project
     const deleteTasksResult = await Task.deleteMany({ project: id });
@@ -415,6 +428,7 @@ export async function DELETE(request: NextRequest) {
     return successResponse(
       {
         deletedProjectId: id,
+        deletedProjectName: projectName,
         deletedTasksCount: deleteTasksResult.deletedCount,
       },
       200,
